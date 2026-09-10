@@ -1,0 +1,671 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>磁力搜索 · 多站点聚合</title>
+<!-- 内联图标：省掉浏览器那次 /favicon.ico 请求（否则控制台一直报 404） -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%F0%9F%A7%B2%3C/text%3E%3C/svg%3E">
+<style>
+  /* ---------- tokens ---------- */
+  :root {
+    --bg: #0e1521;
+    --panel: #141d2e;
+    --panel-2: #1a2538;
+    --line: #26334a;
+    --ink: #e8ecf4;
+    --muted: #8a97ab;
+    --faint: #5c6a80;
+    --seed: #3fbf7f;     /* 活：>=5 种子 */
+    --weak: #e0a93e;     /* 弱：1-4 */
+    --dead: #e05656;     /* 死：0 */
+    --accent: #4c8dff;   /* 品牌蓝，取自 rarbg 那种深蓝 */
+    --accent-dim: #2b4a80;
+    --sel: rgba(76,141,255,.16);
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #eef1f6;
+      --panel: #ffffff;
+      --panel-2: #f3f5fa;
+      --line: #d5dbe6;
+      --ink: #1b2733;
+      --muted: #5c6a80;
+      --faint: #8a97ab;
+      --seed: #1f9d63;
+      --weak: #b07d17;
+      --dead: #c33c3c;
+      --accent: #2b6ce0;
+      --accent-dim: #dfe8fb;
+      --sel: rgba(43,108,224,.14);
+    }
+  }
+
+  /* ---------- base ---------- */
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font: 14px/1.45 -apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .mono, .title-cell, .hash, #query, .swarm-num, .seed-num {
+    font-family: ui-monospace, "SF Mono", "Cascadia Code", Consolas, "Courier New", monospace;
+  }
+  button { font: inherit; cursor: pointer; }
+  a { color: var(--accent); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+  /* ---------- layout ---------- */
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 20px 22px 64px; }
+
+  .brand {
+    display: flex; align-items: baseline; gap: 10px; margin-bottom: 18px;
+  }
+  .brand h1 { font-size: 20px; margin: 0; font-weight: 650; letter-spacing: .2px; }
+  .brand .sub { color: var(--muted); font-size: 13px; }
+
+  .searchbar {
+    display: flex; gap: 10px; align-items: stretch; margin-bottom: 14px;
+  }
+  .searchbar input {
+    flex: 1; min-width: 0;
+    font-size: 15px; color: var(--ink);
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 11px 14px;
+  }
+  .searchbar input::placeholder { color: var(--faint); }
+  .searchbar input:focus { border-color: var(--accent); outline: none; }
+  .searchbar button {
+    background: var(--accent); color: #fff; border: 0; border-radius: 8px;
+    padding: 0 22px; font-size: 15px; font-weight: 600;
+  }
+  .searchbar button:hover { background: #3d7df0; }
+  .searchbar button:disabled { opacity: .55; cursor: default; }
+  .searchbar button.running { background: var(--accent-dim); }
+
+  /* ---------- source chips ---------- */
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+  .matchrow {
+    display: flex; gap: 18px; flex-wrap: wrap; align-items: baseline;
+    margin-bottom: 14px; padding: 8px 14px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  }
+  .match-opt { display: inline-flex; align-items: baseline; gap: 6px; font-size: 13.5px; color: var(--muted); cursor: pointer; user-select: none; }
+  .match-opt input { accent-color: var(--accent); }
+  .match-opt .sub { font-size: 12px; color: var(--faint); }
+  .match-opt:has(input:checked) { color: var(--ink); }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 999px;
+    padding: 5px 12px; color: var(--muted); font-size: 13px; user-select: none;
+    cursor: pointer;
+  }
+  .chip[data-on] { color: var(--ink); border-color: var(--accent); background: var(--sel); }
+  .chip .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; opacity: .9; }
+  .chip[data-on] .dot { color: var(--accent); }
+
+  /* ---------- toolbar: swarm bar + controls ---------- */
+  .toolbar {
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    margin-bottom: 14px; padding: 12px 14px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  }
+  .swarm { flex: 1 1 260px; min-width: 220px; }
+  .swarm-label { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+  .swarm-bar { display: flex; gap: 3px; height: 24px; }
+  .seg {
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+    border-radius: 5px; color: #0e1521; font-size: 12px; font-weight: 700;
+    min-width: 34px; cursor: pointer; padding: 0 8px;
+    transition: filter .12s;
+  }
+  .seg[data-n="0"] { display: none; }
+  .seg:hover { filter: brightness(1.12); }
+  .seg[data-f="alive"] { background: var(--seed); }
+  .seg[data-f="weak"]  { background: var(--weak); }
+  .seg[data-f="dead"]  { background: var(--dead); }
+  .seg.off { filter: grayscale(1) opacity(.45); }
+  .seg-label { font-weight: 500; opacity: .9; }
+  .seg-count { }
+
+  .controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .mini { font-size: 13px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
+  .mini input[type="number"] {
+    width: 58px; background: var(--panel-2); color: var(--ink);
+    border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; font-size: 13px;
+  }
+  .count { font-size: 13px; color: var(--muted); }
+  .count b { color: var(--ink); font-weight: 650; }
+
+  /* ---------- table ---------- */
+  .tblwrap {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    overflow: auto; max-height: 72vh;
+  }
+  table { border-collapse: collapse; width: 100%; min-width: 900px; }
+  thead th {
+    position: sticky; top: 0; z-index: 2;
+    background: var(--panel-2); text-align: left;
+    font-size: 12px; font-weight: 600; color: var(--muted);
+    padding: 9px 12px; border-bottom: 1px solid var(--line); white-space: nowrap;
+    user-select: none;
+  }
+  thead th.sortable { cursor: pointer; }
+  thead th.sortable:hover { color: var(--ink); }
+  thead th .dir { color: var(--accent); }
+  tbody td { padding: 7px 12px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  tbody tr:hover { background: var(--sel); }
+  tbody tr.sel { background: var(--sel); }
+  tbody tr:last-child td { border-bottom: 0; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .seed-num { font-weight: 700; }
+  .seed-num.s-alive { color: var(--seed); }
+  .seed-num.s-weak  { color: var(--weak); }
+  .seed-num.s-dead  { color: var(--dead); }
+  .td-size { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .td-src { color: var(--muted); font-size: 12.5px; white-space: nowrap; }
+  .title-cell {
+    font-size: 13px; max-width: 460px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .title-cell a { color: var(--ink); text-decoration: none; }
+  .title-cell a:hover { color: var(--accent); }
+  .title-cell .hash { color: var(--faint); font-size: 11px; margin-left: 8px; }
+  .td-date { color: var(--faint); font-size: 12.5px; white-space: nowrap; }
+  td.cb { width: 34px; padding-right: 2px; }
+  td.cb input { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; }
+  td.op { width: 30px; text-align: center; }
+  .copybtn {
+    background: none; border: 0; color: var(--faint); font-size: 14px; opacity: 0;
+    transition: opacity .1s;
+  }
+  tr:hover .copybtn, tr.sel .copybtn { opacity: 1; }
+  .copybtn:hover { color: var(--accent); }
+
+  /* ---------- progress ---------- */
+  .progress {
+    display: none; margin-bottom: 14px; padding: 12px 14px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    font-size: 13px;
+  }
+  .progress.show { display: block; }
+  .progress .line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; line-height: 1.9; }
+  .progress .spinner {
+    width: 14px; height: 14px; border-radius: 50%;
+    border: 2px solid var(--line); border-top-color: var(--accent);
+    animation: spin .8s linear infinite; flex: none;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .progress .src-ok { color: var(--ink); }
+  .progress .src-bad { color: var(--dead); }
+  .progress .note { color: var(--muted); font-size: 12px; }
+
+  /* ---------- empty / error ---------- */
+  .empty { padding: 60px 20px; text-align: center; color: var(--muted); }
+  .empty .big { font-size: 15px; margin-bottom: 6px; }
+  .empty .hint { font-size: 13px; color: var(--faint); }
+  .empty code { background: var(--panel-2); padding: 2px 6px; border-radius: 4px; font-family: ui-monospace, monospace; }
+
+  /* ---------- toast ---------- */
+  .toast {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    background: var(--ink); color: var(--bg); padding: 8px 16px; border-radius: 8px;
+    font-size: 13px; opacity: 0; pointer-events: none; transition: opacity .15s;
+    z-index: 10; white-space: nowrap;
+  }
+  .toast.show { opacity: 1; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .progress .spinner { animation: none; }
+    * { transition: none !important; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand">
+    <h1>磁力搜索</h1>
+    <span class="sub">一次问多个站点 · 去重后按最活跃的来源计种子数</span>
+  </div>
+
+  <form class="searchbar" id="searchForm">
+    <input id="query" type="search" placeholder="输入名字，例如 pawn stars s03" autocomplete="off" spellcheck="false">
+    <button id="go" type="submit">搜索</button>
+  </form>
+
+  <div class="chips" id="chips"></div>
+  <div class="matchrow">
+    <label class="match-opt">
+      <input type="radio" name="match" id="matchSmart" value="smart" checked>
+      智能 <span class="sub">关键词出现在标题里即可</span>
+    </label>
+    <label class="match-opt">
+      <input type="radio" name="match" id="matchExact" value="exact">
+      完全 <span class="sub">从标题开头连续对上，不误伤别的剧</span>
+    </label>
+  </div>
+
+  <div class="toolbar">
+    <div class="swarm">
+      <div class="swarm-label">种子存活 — 点一段只看这类</div>
+      <div class="swarm-bar" id="swarmBar"></div>
+    </div>
+    <div class="controls">
+      <label class="mini">至少 <input id="minSeeds" type="number" min="0" value="0"> 种子</label>
+      <span class="count" id="count"></span>
+    </div>
+  </div>
+
+  <div class="progress" id="progress"></div>
+
+  <div class="tblwrap" id="tblwrap" hidden>
+    <table>
+      <thead id="thead"></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+
+  <div class="empty" id="empty">
+    <div class="big">还没有结果</div>
+    <div class="hint">输入一个名字开始，例如 <code>pawn stars s03</code>。标题须包含全部关键词。</div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+'use strict';
+const SITES = [
+  { id: 'tpb',      label: 'TPB' },
+  { id: 'therarbg', label: 'therarbg' },
+  { id: 'knaben',   label: 'knaben' },
+  { id: 'eztv',     label: 'EZTV' },
+  { id: 'rargb',    label: 'rargb' },
+];
+
+// 请求输入点：运行中 / 已完成，用这些把控件状态和 DOM 同步起来
+const state = {
+  running: false,
+  es: null,
+  rows: [],          // 合并后的结果数组（原始顺序，展示时再排序/过滤）
+  order: [],         // 排序后的 index 数组，对应 rows
+  selected: new Set(),// 选中的行 id（hash 或 title）
+  sortKey: 'seeds',
+  sortDir: -1,
+  aliveFilter: null,  // null | 'alive' | 'weak' | 'dead'
+  minSeeds: 0,
+  clientFilter: '',
+};
+
+const $ = (s) => document.querySelector(s);
+const fmtSize = (b) => {
+  if (!b) return '-';
+  const u = ['B','KB','MB','GB','TB']; let v = b, i = 0;
+  while (v >= 1024 && i < u.length-1) { v /= 1024; i++; }
+  return (v >= 100 || i === 0 ? Math.round(v) : v.toFixed(1)) + ' ' + u[i];
+};
+const fmtDate = (d) => (d || '').slice(0, 10);
+const rowId = (it) => it.hash || ('t:' + (it.title || '').toLowerCase());
+const aliveClass = (s) => (s >= 5 ? 's-alive' : s >= 1 ? 's-weak' : 's-dead');
+const aliveBucket = (s) => (s >= 5 ? 'alive' : s >= 1 ? 'weak' : 'dead');
+
+/* ---------- source chips ---------- */
+function buildChips() {
+  const on = new Set(['tpb', 'therarbg', 'knaben', 'eztv']);
+  $('#chips').replaceChildren();
+  for (const s of SITES) {
+    const el = document.createElement('label');
+    el.className = 'chip';
+    el.dataset.id = s.id;
+    if (on.has(s.id)) el.dataset.on = '';
+    el.innerHTML = '<span class="dot"></span>' + s.label +
+      (s.id === 'rargb' ? '<span style="font-size:11px;opacity:.7">(慢)</span>' : '');
+    el.addEventListener('click', () => { el.toggleAttribute('data-on'); });
+    $('#chips').appendChild(el);
+  }
+}
+function selectedSites() {
+  return SITES.filter((s) => document.querySelector('.chip[data-id="' + s.id + '"]').hasAttribute('data-on'))
+    .map((s) => s.id);
+}
+
+/* ---------- swarm bar ---------- */
+function buildSwarm(results) {
+  const bar = $('#swarmBar');
+  bar.replaceChildren();
+  const buckets = { alive: 0, weak: 0, dead: 0 };
+  for (const r of results) buckets[aliveBucket(r.seeders)]++;
+  const label = { alive: '活', weak: '弱', dead: '死' };
+  for (const key of ['alive', 'weak', 'dead']) {
+    if (!buckets[key]) continue;
+    const seg = document.createElement('button');
+    seg.className = 'seg';
+    seg.dataset.f = key;
+    seg.dataset.n = buckets[key];
+    if (state.aliveFilter === key) seg.classList.add('off');
+    seg.innerHTML = '<span class="seg-label">' + label[key] + '</span><span class="seg-count">' + buckets[key] + '</span>';
+    seg.style.flex = buckets[key] || 0.0001;
+    seg.title = label[key] + '：' + buckets[key] + ' 条，点一下只看这类';
+    seg.addEventListener('click', () => {
+      state.aliveFilter = state.aliveFilter === key ? null : key;
+      buildSwarm(results);
+      renderTable();
+    });
+    bar.appendChild(seg);
+  }
+  if (!results.length) bar.innerHTML = '<span class="note" style="color:var(--faint);font-size:12px">—</span>';
+}
+
+/* ---------- table headers ---------- */
+const HEADS = [
+  { key: 'cb', label: '' },
+  { key: 'seeds', label: '种子', sortable: true, num: true },
+  { key: 'leech', label: '下载', num: true },
+  { key: 'size', label: '大小', sortable: true, num: true },
+  { key: 'src', label: '来源' },
+  { key: 'title', label: '标题', sortable: true },
+  { key: 'date', label: '发布', sortable: true },
+  { key: 'op', label: '' },
+];
+function buildHead() {
+  const tr = document.createElement('tr');
+  for (const h of HEADS) {
+    const th = document.createElement('th');
+    if (h.label) th.textContent = h.label;
+    if (h.num) th.classList.add('num');
+    if (h.sortable) {
+      th.classList.add('sortable');
+      th.dataset.key = h.key;
+      if (state.sortKey === h.key) {
+        const dir = document.createElement('span');
+        dir.className = 'dir';
+        dir.textContent = state.sortDir === -1 ? ' ↓' : ' ↑';
+        th.appendChild(dir);
+      }
+      th.addEventListener('click', (e) => {
+        if (e.target.className === 'dir') return;
+        if (state.sortKey === h.key) state.sortDir *= -1;
+        else { state.sortKey = h.key; state.sortDir = -1; }
+        buildHead();
+        renderTable();
+      });
+    }
+    tr.appendChild(th);
+  }
+  $('#thead').replaceChildren(tr);
+}
+
+/* ---------- filtering + sorting ---------- */
+function applyView() {
+  const tokens = state.clientFilter.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  let idx = [];
+  state.rows.forEach((r, i) => {
+    if (r.seeders < state.minSeeds) return;
+    if (state.aliveFilter && aliveBucket(r.seeders) !== state.aliveFilter) return;
+    if (tokens.length) {
+      const t = r.title.toLowerCase();
+      if (!tokens.every((k) => t.includes(k))) return;
+    }
+    idx.push(i);
+  });
+  const dir = state.sortDir;
+  const cmp = {
+    seeds: (a, b) => a.seeders - b.seeders || b.leechers - a.leechers,
+    size: (a, b) => (a.size || 0) - (b.size || 0),
+    title: (a, b) => a.title.localeCompare(b.title, 'zh'),
+    date: (a, b) => String(b.date || '').localeCompare(String(a.date || '')),
+  }[state.sortKey] || ((a, b) => b.seeders - a.seeders);
+  idx.sort((x, y) => dir * cmp(state.rows[x], state.rows[y]));
+  state.order = idx;
+}
+
+/* ---------- render ---------- */
+function renderTable() {
+  applyView();
+  const tbody = $('#tbody');
+  tbody.replaceChildren();
+  for (const i of state.order) {
+    const r = state.rows[i];
+    const tr = document.createElement('tr');
+    const id = rowId(r);
+    if (state.selected.has(id)) tr.classList.add('sel');
+
+    // checkbox
+    const tdCb = document.createElement('td');
+    tdCb.className = 'cb';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = state.selected.has(id);
+    cb.addEventListener('change', () => {
+      cb.checked ? state.selected.add(id) : state.selected.delete(id);
+      tr.classList.toggle('sel', cb.checked);
+      updateCount();
+    });
+    tdCb.appendChild(cb);
+    tr.appendChild(tdCb);
+
+    // seeds
+    const tdSeeds = document.createElement('td');
+    tdSeeds.className = 'num';
+    const seedEl = document.createElement('span');
+    seedEl.className = 'seed-num ' + aliveClass(r.seeders);
+    seedEl.textContent = r.seeders;
+    tdSeeds.appendChild(seedEl);
+    tr.appendChild(tdSeeds);
+
+    // leechers
+    const tdLe = document.createElement('td');
+    tdLe.className = 'num';
+    tdLe.textContent = r.leechers || 0;
+    tr.appendChild(tdLe);
+
+    // size
+    const tdSize = document.createElement('td');
+    tdSize.className = 'num td-size';
+    tdSize.textContent = fmtSize(r.size);
+    tr.appendChild(tdSize);
+
+    // source
+    const tdSrc = document.createElement('td');
+    tdSrc.className = 'td-src';
+    tdSrc.textContent = (r.sources || []).join('+');
+    tdSrc.title = '当前种子数取自: ' + (r.seedFrom || '');
+    tr.appendChild(tdSrc);
+
+    // title (click = copy magnet)
+    const tdTitle = document.createElement('td');
+    tdTitle.className = 'title-cell';
+    const a = document.createElement('a');
+    a.textContent = r.title;
+    a.title = '点击复制磁力';
+    if (r.magnet) {
+      a.addEventListener('click', async () => {
+        await copyText(r.magnet);
+        toast('已复制磁力');
+      });
+    } else {
+      a.style.cursor = 'default';
+      a.title = '没有磁力链接';
+    }
+    tdTitle.appendChild(a);
+    if (r.hash) {
+      const h = document.createElement('span');
+      h.className = 'hash';
+      h.textContent = r.hash.slice(0, 12);
+      h.title = 'infohash: ' + r.hash;
+      tdTitle.appendChild(h);
+    }
+    tr.appendChild(tdTitle);
+
+    // date
+    const tdDate = document.createElement('td');
+    tdDate.className = 'td-date';
+    tdDate.textContent = fmtDate(r.date);
+    tr.appendChild(tdDate);
+
+    // op (details link)
+    const tdOp = document.createElement('td');
+    tdOp.className = 'op';
+    if (r.details) {
+      const d = document.createElement('a');
+      d.textContent = '↗';
+      d.title = '打开原页面';
+      d.href = r.details;
+      d.target = '_blank';
+      d.rel = 'noopener';
+      tdOp.appendChild(d);
+    }
+    tr.appendChild(tdOp);
+
+    tbody.appendChild(tr);
+  }
+  updateCount();
+}
+
+function updateCount() {
+  const sel = state.selected.size;
+  $('#count').innerHTML =
+    '显示 ' + state.order.length + ' / ' + state.rows.length +
+    ' 条 · 已选 <b>' + sel + '</b>' +
+    '<button class="copybtn" style="opacity:1;margin-left:10px" id="copySel" ' + (sel ? '' : 'disabled') + '>复制选中磁力</button>' +
+    '<button class="copybtn" style="opacity:1" id="copyAll">复制全部磁力</button>';
+  const cs = $('#copySel'), ca = $('#copyAll');
+  if (cs) cs.addEventListener('click', () => {
+    const mags = state.rows.filter((r) => state.selected.has(rowId(r)) && r.magnet).map((r) => r.magnet);
+    copyText(mags.join('\n')).then(() => toast('已复制 ' + mags.length + ' 条磁力'));
+  });
+  if (ca) ca.addEventListener('click', () => {
+    const mags = state.rows.filter((r) => r.magnet).map((r) => r.magnet);
+    copyText(mags.join('\n')).then(() => toast('已复制 ' + mags.length + ' 条磁力'));
+  });
+}
+
+/* ---------- progress ---------- */
+function showProgress(show) {
+  $('#progress').classList.toggle('show', show);
+  $('#go').classList.toggle('running', show);
+  $('#go').disabled = show;
+}
+function addProgressLine(text, kind) {
+  const p = $('#progress');
+  const line = document.createElement('div');
+  line.className = 'line';
+  const spinner = document.createElement('span');
+  spinner.className = 'spinner';
+  const msg = document.createElement('span');
+  msg.textContent = text;
+  if (kind === 'bad') msg.className = 'src-bad';
+  else if (kind === 'src') msg.className = 'src-ok';
+  else msg.className = 'note';
+  line.appendChild(spinner);
+  line.appendChild(msg);
+  p.appendChild(line);
+  p.scrollTop = p.scrollHeight;
+}
+
+/* ---------- search ---------- */
+async function search() {
+  const q = $('#query').value.trim();
+  if (!q || state.running) return;
+  const sites = selectedSites();
+  if (!sites.length) { toast('至少选一个数据源'); return; }
+
+  state.es && state.es.close();
+  state.rows = [];
+  state.selected = new Set();
+  state.aliveFilter = null;
+  state.clientFilter = '';
+  state.minSeeds = parseInt($('#minSeeds').value || '0', 10) || 0;
+  $('#tbody').replaceChildren();
+  $('#tblwrap').hidden = true;
+  $('#empty').hidden = true;
+  showProgress(true);
+  $('#progress').replaceChildren();
+  addProgressLine('搜索 ' + q + ' · ' + sites.join(', ') + '…');
+
+  const params = new URLSearchParams({ query: q, sites: sites.join(',') });
+  if (state.minSeeds) params.set('minSeeds', state.minSeeds);
+  params.set('sort', state.sortKey);
+  // 智能（子串） / 完全（开头连续对）
+  const matchSel = document.querySelector('input[name="match"]:checked');
+  params.set('match', matchSel ? matchSel.value : 'smart');
+
+  state.running = true;
+  const es = new EventSource('/api/stream?' + params.toString());
+  state.es = es;
+  const onDone = () => {
+    es.close();
+    state.running = false;
+    showProgress(false);
+  };
+  es.onerror = () => { if (state.running) { addProgressLine('连接中断，请重试', 'bad'); onDone(); } };
+
+  es.addEventListener('source', (e) => {
+    const d = JSON.parse(e.data);
+    addProgressLine(d.message, d.ok === false ? 'bad' : 'src');
+  });
+  es.addEventListener('expand', (e) => {
+    addProgressLine(JSON.parse(e.data).message, 'note');
+  });
+  es.addEventListener('summary', (e) => {
+    addProgressLine(JSON.parse(e.data).message, 'note');
+  });
+  es.addEventListener('done', (e) => {
+    const d = JSON.parse(e.data);
+    onDone();
+    state.rows = d.results || [];
+    if (!state.rows.length) {
+      $('#empty').hidden = false;
+      $('#empty').querySelector('.big').textContent = '没有找到匹配的结果';
+      $('#empty').querySelector('.hint').textContent = '试试更短的关键词，或者把 rargb 也勾上（它慢）。';
+    } else {
+      $('#empty').hidden = true;
+      $('#tblwrap').hidden = false;
+      state.order = state.rows.map((_, i) => i);
+      buildHead();
+      buildSwarm(state.rows);
+      renderTable();
+      toast('搜索完成，共 ' + state.rows.length + ' 条');
+    }
+  });
+  es.addEventListener('error', (e) => {
+    const d = JSON.parse(e.data || '{}');
+    onDone();
+    addProgressLine('出错: ' + (d.message || '未知错误'), 'bad');
+  });
+}
+
+/* ---------- toast / copy ---------- */
+let toastTimer = 0;
+function toast(text) {
+  const t = $('#toast');
+  t.textContent = text;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 1800);
+}
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (e) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    ta.remove();
+  }
+}
+
+/* ---------- init ---------- */
+buildChips();
+buildHead();
+$('#searchForm').addEventListener('submit', (e) => { e.preventDefault(); search(); });
+$('#minSeeds').addEventListener('change', () => {
+  state.minSeeds = parseInt($('#minSeeds').value || '0', 10) || 0;
+  renderTable();
+});
+</script>
+</body>
+</html>

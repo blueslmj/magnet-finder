@@ -1,0 +1,34 @@
+{
+  "name": "magnet-finder",
+  "version": "1.0.0",
+  "private": true,
+  "description": "多站点磁力搜索：聚合 TPB / therarbg / knaben / EZTV 的 API，按种子数排序去重。网页版 + 命令行，零依赖。",
+  "scripts": {
+    "test": "node --test tests/parse.test.js tests/cli.test.js tests/engine.test.js",
+    "start": "node cli/launch.js",
+    "serve": "node cli/serve.js",
+    "search": "node cli/search.js",
+    "launch": "node cli/launch.js"
+  },
+  "keywords": [
+    "torrent",
+    "magnet",
+    "search",
+    "bittorrent",
+    "seeders",
+    "cli"
+  ],
+  "license": "MIT",
+  "author": "blueslmj",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/blueslmj/magnet-finder.git"
+  },
+  "homepage": "https://github.com/blueslmj/magnet-finder#readme",
+  "bugs": {
+    "url": "https://github.com/blueslmj/magnet-finder/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -1,1 +1,180 @@
 # magnet-finder
+
+> 多站点磁力搜索：输入关键词，同时问 4 个站点的 API，按种子数排序去重。
+> Multi-site torrent search with seeder counts. Web UI + CLI, zero dependencies.
+
+**零依赖**（连 `node_modules` 都没有），只要 Node.js 18+。有网页版和命令行两种用法。
+
+核心问题很简单：**搜出来一堆结果，但大半是 0 种子下不动的。** 这个工具把各站结果合并去重，
+把种子数摆在最显眼的位置，让你一眼看出哪些还活着。
+
+```
+种子  下载     大小  来源           标题
+  46    29   146 MB  therarbg+EZTV  Pawn Stars S03E06 Ready Set Pawn iNTERNAL HDTV x264 W4F
+  42    46  95.4 MB  therarbg+EZTV  Pawn Stars S03E26 Wise Guys iNTERNAL 480p x264 mSD
+  41    11   126 MB  therarbg+EZTV  Pawn Stars S03E13 Never Surrender iNTERNAL HDTV x264 W4F
+```
+
+## 快速开始
+
+**Windows 用户**：双击 `启动搜索.bat`，它会起服务并自动打开浏览器。没装 Node.js 会提示你去装。
+
+其他系统 / 手动启动：
+
+```bash
+git clone https://github.com/blueslmj/magnet-finder.git
+cd magnet-finder
+
+npm start                          # 网页版，浏览器打开 http://127.0.0.1:5173
+npm run search -- "pawn stars s03" # 命令行版
+```
+
+不需要 `npm install` —— 这个项目真的没有依赖。
+
+## 网页版
+
+界面是本地网页，**抓取在服务端做**（浏览器直接调 apibay 等会被 CORS 拦）。搜索过程通过
+Server-Sent Events 实时推进度 —— 一次搜索要跑几十秒（逐集补搜 + EZTV 翻十几页），
+不用憋着干等。只监听 `127.0.0.1`，不会暴露给局域网。
+
+- **数据源开关**在顶部一排：TPB / therarbg / knaben / EZTV（rargb 慢，默认关）
+- **匹配模式**：智能（关键词出现即可）/ 完全（从标题开头连续对上）。
+  搜 `friends s01` 时选「完全」，就不会再混进 `Your.Friends.and.Neighbors` 了
+- **存活条**：绿=≥5 种子、黄=1-4、红=0。点某一段只看那一类
+- 表格点表头换排序；点标题**直接复制磁力**；勾选后可批量复制
+- 「至少 N 种子」输入框过滤死种
+
+想换端口：`node cli/serve.js --port 8080`
+
+## 命令行版
+
+```bash
+node cli/search.js "pawn stars s03"
+node cli/search.js "friends s01" --exact --min-seeds 1
+node cli/search.js "pawn stars s03" --csv out.csv
+node cli/search.js "pawn stars s03" --magnets m.txt   # 只导磁力，整段粘进 qBittorrent
+node cli/search.js --help
+```
+
+进度信息走 stderr、表格走 stdout，所以 `node cli/search.js "x" > list.txt` 只会拿到结果。
+
+### 匹配模式
+
+输入不区分大小写，`.` `_` `-` `+` 等分隔符都当空格 —— 所以**可以直接粘发布名**：
+`pawn.stars.s24` 和 `pawn stars s24` 等价。
+
+| 模式 | 规则 | 适合 |
+| --- | --- | --- |
+| 智能（默认） | 每个关键词在标题里出现即可 | 不确定完整片名，想广撒网 |
+| `--exact` | 从标题**开头**连续对上 | 明确要找某个剧，别被别的剧干扰 |
+| `--loose` | 标题含第一个关键词即可 | 只看剧名、不限定季 |
+
+完全匹配为什么按「开头连续」判定：发布名的规范是 `剧名.SxxExx.质量.小组`，**剧名永远在开头**。
+开头的 `the/a/an` 会先剥掉，所以 `big bang theory` 照样命中 `The.Big.Bang.Theory.S01E01`。
+
+实测 `friends s01`：智能模式 297 条（其中 258 条是别的剧），完全模式 35 条、**0 条误命中**。
+
+### 数据源
+
+| 源 | 接口 | 说明 |
+| --- | --- | --- |
+| `tpb` | apibay.org | The Pirate Bay 官方接口，一次返回全部命中 |
+| `therarbg` | therarbg.com `?format=json` | RARBG 数据库的延续，带分页 |
+| `knaben` | api.knaben.org/v1 | 聚合几十个站点的索引，返回里带 `tracker` 说明来自哪个站 |
+| `eztv` | eztvx.to/api | 只能按 IMDb id 查，id 会从其它源的结果里自动推断 |
+| `rargb` | 抓 HTML | 没有 API，列表页也没磁力，要逐个进详情页，**默认不启用**（`--sites all` 才开） |
+
+前四个都走站点自己的 JSON API —— 这些接口**不挂 Cloudflare**（而 eztvx.to 的网页是挂的），
+而且直接返回 seeders，比抓 HTML 又快又准。
+
+## 为什么不是又一个种子搜索脚本
+
+这些站点各有各的坑。代码里每一处绕路都对应一个实测踩出来的问题，且都有回归测试：
+
+**1. 站点的关键词搜索按整词匹配。** 标题里是 `S03E07`，所以搜 `s03` 一条都搜不到，搜 `s03e07` 就有。
+工具检测到裸季号会自动展开成 `s03e01..e30` 逐集补搜（`--no-expand` 关掉）。
+实测 `pawn stars s03`：TPB 直接搜 **0 条**，逐集补搜后 **193 条**。
+
+**2. 放宽查询会撞上分页天花板。** 把查询放宽成 `pawn stars` 确实有结果，但站点按新到旧
+只给前 100 条，S03 这种老剧集根本翻不到。所以三条路互补：knaben 用原查询（它的索引能匹配季号）、
+TPB 用逐集补搜、EZTV 用 IMDb id 直接列出全剧所有集。
+
+**3. IMDb id 必须从未过滤的结果里推断。** 一开始只从「命中项」里找 id，结果季号一过滤就啥都不剩，
+EZTV 永远拿不到 id 直接跳过。剧集的身份和季号无关。
+
+**4. therarbg 的 `keywords:` 必须用 `%20` 编码**，用 `+` 的话多词查询直接返回 0 条。
+
+**5. 结果按 infohash 跨站去重**，seeders 取各站最大值，`来源` 列显示 `therarbg+EZTV` 这样 ——
+多站都收录通常也更容易连上。
+
+## 输出
+
+终端表格按种子数降序（`--sort size|date|title` 可改），末尾提示有多少条是 0 种子。
+
+导出选项：
+
+| 参数 | 内容 |
+| --- | --- |
+| `--csv` | 种子数/大小/来源/磁力/详情页全都有，带 BOM，Excel 不乱码 |
+| `--txt` | 标题 + Tab + 磁力 |
+| `--magnets` | 只有磁力，一行一个，可整段粘进 qBittorrent |
+| `--json` | 完整字段 |
+
+## 关于种子数
+
+页面上的「种子」是**正在做种的人数**（seeders），「下载」是**正在下载的人数**（leechers）。
+两者都是实时快照，不是累计下载次数。
+
+这些数字来自各站点自己抓的 tracker 统计，所以**可能过时、也可能不全**（DHT 和 PEX 里的节点不算在内）。
+0 种子不等于绝对下不动，但确实是很强的信号。
+
+## 项目结构
+
+```
+cli/
+  search.js    命令行入口
+  serve.js     网页版 HTTP 服务（SSE 推进度）
+  launch.js    双击启动器（起服务 + 开浏览器）
+  engine.js    搜索流程本体，命令行和网页共用
+  sources.js   各站点适配器
+  match.js     关键词匹配、跨站去重合并（纯函数）
+  format.js    终端表格 / CSV / txt 输出（纯函数）
+  parse.js     HTML 解析层（rargb 源用；这是个通用的列表页解析器，搜索工具只用到其中一部分）
+  web/         网页界面
+tests/         48 个测试，全部不联网
+```
+
+## 测试
+
+```bash
+npm test
+```
+
+48 个测试，覆盖关键词匹配、放宽查询、逐集展开、跨站合并、体积格式化、表格对齐、HTML 解析层。
+全部不联网，改规则前先跑一遍 —— 这些测试是拿真实页面的坑固化下来的。
+
+## 贡献
+
+站点结构变化很快。如果某个站点搜不出结果，欢迎提 issue 并附上：
+
+1. 你搜的关键词和用的数据源
+2. 终端输出或网页版的进度日志
+3. 如果是 rargb（HTML 抓取），再附上那个页面 F12 控制台跑这行的输出：
+
+```js
+(()=>{const r=document.querySelectorAll('tr'),m=document.querySelectorAll('a[href^="magnet:"]');console.log('行数',r.length,'磁力',m.length);console.log(r[1]?.outerHTML.slice(0,800))})()
+```
+
+## 免责声明
+
+本项目只做一件事：**聚合这些站点自己公开的搜索 API，把结果整理后展示出来**。
+它不托管、不分发、不索引任何文件内容，也不参与任何数据传输 —— 拿到磁力链接之后的事情，
+跟本项目无关。
+
+请自行确认你下载的内容在你所在的司法管辖区是合法的。BitTorrent 本身是中性技术，
+有大量正当用途（Linux 发行版、公共领域影音、开放数据集分发等）。
+**使用者自行承担全部责任。**
+
+## 许可证
+
+[MIT](LICENSE)

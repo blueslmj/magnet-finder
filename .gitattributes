@@ -1,0 +1,14 @@
+# 仓库里统一存 LF，检出时按平台转换。
+# 没有这个文件的话，Windows 和 Linux 的贡献者会互相看到「整个文件都改了」的假 diff。
+* text=auto eol=lf
+
+# 批处理文件必须是 CRLF，否则 Windows 上 cmd.exe 可能解析异常。
+# （另外 .bat 内容必须是纯 ASCII —— cmd 按系统 ANSI 代码页解析批处理文件，
+#  不是 UTF-8，中文字节会破坏行边界。中文提示都放在 node 里打印。）
+*.bat text eol=crlf
+
+# 二进制，别碰
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
