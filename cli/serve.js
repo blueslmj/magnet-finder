@@ -16,6 +16,8 @@ const path = require('path');
 const { URL } = require('url');
 
 const { runSearch, normalizeOptions } = require('./engine.js');
+const qbit = require('./qbit.js');
+const config = require('./config.js');
 
 const WEB_DIR = path.join(__dirname, 'web');
 
@@ -106,6 +108,106 @@ function streamSearch(req, res, url) {
     .finally(() => res.end());
 }
 
+/** 读 JSON 请求体，带大小上限 —— 别让一个畸形请求把内存吃光 */
+function readJson(req, limit) {
+  const max = limit || 256 * 1024;
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks = [];
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > max) {
+        reject(new Error('请求体过大'));
+        req.destroy();
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on('end', () => {
+      const raw = Buffer.concat(chunks).toString('utf8');
+      if (!raw) return resolve({});
+      try {
+        resolve(JSON.parse(raw));
+      } catch (e) {
+        reject(new Error('请求体不是合法 JSON'));
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+function sendJson(res, status, payload) {
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
+  res.end(JSON.stringify(payload));
+}
+
+/** 错误分类映射到 HTTP 状态码，前端好按类型提示 */
+const KIND_STATUS = { network: 502, auth: 401, banned: 429, csrf: 403, api: 400 };
+
+function sendError(res, e) {
+  const kind = (e && e.kind) || 'unknown';
+  sendJson(res, KIND_STATUS[kind] || 500, {
+    ok: false,
+    kind: kind,
+    message: (e && e.message) || String(e),
+  });
+}
+
+/**
+ * qBittorrent 相关接口。
+ * 全部由服务端代发 —— 浏览器直接调 qBittorrent 会被 CORS 和它的 CSRF 防护双重拦下。
+ */
+async function handleQbit(req, res, url) {
+  const action = url.pathname.slice('/api/qb/'.length);
+
+  if (action === 'config' && req.method === 'GET') {
+    return sendJson(res, 200, { ok: true, config: config.forClient() });
+  }
+
+  if (action === 'config' && req.method === 'POST') {
+    const body = await readJson(req);
+    const saved = config.save(body);
+    return sendJson(res, 200, { ok: true, config: config.forClient(saved) });
+  }
+
+  if (action === 'test' && req.method === 'POST') {
+    // 允许带上还没保存的表单值，这样「测试连接」能在保存前先验证
+    const body = await readJson(req);
+    const cfg = Object.assign({}, config.load(), stripEmpty(body));
+    const client = qbit.createClient(cfg);
+    const info = await client.test();
+    return sendJson(res, 200, Object.assign({ ok: true }, info));
+  }
+
+  if (action === 'add' && req.method === 'POST') {
+    const body = await readJson(req);
+    const magnets = (body.magnets || []).filter((m) => typeof m === 'string' && m.startsWith('magnet:'));
+    if (!magnets.length) {
+      return sendJson(res, 400, { ok: false, kind: 'api', message: '没有可推送的磁力链接' });
+    }
+    const cfg = config.load();
+    const client = qbit.createClient(cfg);
+    await client.login();
+    const r = await client.addMagnets(magnets, {
+      savepath: body.savepath || cfg.savepath,
+      category: body.category || cfg.category,
+      paused: !!body.paused,
+    });
+    return sendJson(res, 200, { ok: true, count: r.count });
+  }
+
+  return sendJson(res, 404, { ok: false, message: '没有这个接口' });
+}
+
+/** 表单里没填的字段不要覆盖已保存的配置 */
+function stripEmpty(obj) {
+  const out = {};
+  for (const k of Object.keys(obj || {})) {
+    if (obj[k] !== '' && obj[k] !== null && obj[k] !== undefined) out[k] = obj[k];
+  }
+  return out;
+}
+
 function createServer() {
   return http.createServer((req, res) => {
     let url;
@@ -116,6 +218,9 @@ function createServer() {
       return res.end('bad request');
     }
     if (url.pathname === '/api/stream') return streamSearch(req, res, url);
+    if (url.pathname.startsWith('/api/qb/')) {
+      return handleQbit(req, res, url).catch((e) => sendError(res, e));
+    }
     return serveStatic(req, res, url.pathname);
   });
 }

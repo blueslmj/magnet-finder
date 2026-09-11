@@ -120,6 +120,39 @@ EZTV 永远拿不到 id 直接跳过。剧集的身份和季号无关。
 | `--magnets` | 只有磁力，一行一个，可整段粘进 qBittorrent |
 | `--json` | 完整字段 |
 
+## 推送到 qBittorrent
+
+搜到了直接点「下载」推给 qBittorrent，不用再复制磁力去别的工具里粘。
+上游 [qbittorrent/qBittorrent](https://github.com/qbittorrent/qBittorrent) 和
+[c0re100/qBittorrent-Enhanced-Edition](https://github.com/c0re100/qBittorrent-Enhanced-Edition)
+的 Web API 完全一致，两个都能用，不用区分。
+
+**先在 qBittorrent 里开 WebUI**：选项 → Web UI → 勾选「Web 用户界面（远程控制）」，
+记下地址和端口。然后在本工具页面点右上角的 **qBittorrent** 按钮，填地址和账号，
+点「测试连接」确认通了再保存。
+
+之后：
+
+- 每行右侧的 **下载** 按钮 —— 推送这一条
+- 勾选多行后点 **发送选中到 qBittorrent** —— 批量推送
+- 命令行：`node cli/search.js "pawn stars s03" --send-qb 5`（只推种子最多的前 5 条）
+
+配置存在 `qbit.config.json`（已 gitignore），也可以用环境变量覆盖：
+`QB_URL` / `QB_USER` / `QB_PASS` / `QB_SAVEPATH` / `QB_CATEGORY`。
+
+### 两个会卡住人的坑
+
+**1. 浏览器不能直接调 qBittorrent。** 它不发 CORS 头，而且有 CSRF 防护 ——
+会校验请求的 `Referer`/`Origin` 是不是跟自己同源，从网页直接发必被 403。
+所以推送跟搜索一样由本地 Node 服务代发，服务端能把 `Referer` 设成 qBittorrent 自己的地址。
+
+**2. 「对本机跳过认证」时用户名要留空。** qBittorrent 有个
+「对 localhost 上的客户端跳过身份验证」选项，开了之后再去调登录接口反而多余。
+本工具的规则是：用户名填了就登录，留空就直接调 API。
+
+连接失败时会说明具体原因（连不上 / 密码错 / IP 被封 / 被 CSRF 拒），而不是笼统一句失败。
+连续输错密码会被 qBittorrent 临时封 IP，这种情况等几分钟就行。
+
 ## 关于种子数
 
 页面上的「种子」是**正在做种的人数**（seeders），「下载」是**正在下载的人数**（leechers）。

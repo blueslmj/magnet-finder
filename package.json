@@ -4,7 +4,7 @@
   "private": true,
   "description": "多站点磁力搜索：聚合 TPB / therarbg / knaben / EZTV 的 API，按种子数排序去重。网页版 + 命令行，零依赖。",
   "scripts": {
-    "test": "node --test tests/parse.test.js tests/cli.test.js tests/engine.test.js",
+    "test": "node --test tests/parse.test.js tests/cli.test.js tests/engine.test.js tests/qbit.test.js tests/config.test.js tests/serve.qbit.test.js",
     "start": "node cli/launch.js",
     "serve": "node cli/serve.js",
     "search": "node cli/search.js",

@@ -1,6 +1,9 @@
 # 依赖（本项目零依赖，但别人 clone 后可能会装工具链）
 node_modules/
 
+# qBittorrent 连接配置（含密码，绝不能提交）
+qbit.config.json
+
 # 搜索工具的导出文件
 *.csv
 *.magnets.txt

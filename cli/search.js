@@ -30,6 +30,8 @@ const USAGE = [
   '  --exact            完全匹配：查询必须从标题开头连续对上。搜 friends 不再命中',
   '                     Your.Friends.and.Neighbors 这种中间夹关键词的剧',
   '  --loose            宽松匹配：只要标题包含第一个关键词（适合只看剧名、不限季）',
+  '  --send-qb [N]      把结果推送到 qBittorrent。跟数字则只推种子最多的前 N 条，',
+  '                     不跟则全推。连接配置见 qbit.config.json 或网页版的设置面板',
   '  --top N            表格只显示前 N 行（默认 40，0 = 全部）',
   '  --sort X           seeds(默认) | size | date | title',
   '  --imdb ttXXXXXXX   指定 IMDb id 给 EZTV 用；不指定从其它源结果里自动推断',
@@ -75,6 +77,12 @@ function parseArgs(argv) {
     else if (a === '--no-expand') opt.expand = false;
     else if (a === '--exact') opt.match = 'exact';
     else if (a === '--loose') opt.match = 'loose';
+    else if (a === '--send-qb') {
+      // 后面跟数字就是「只推前 N 条」，不跟就是全推
+      const n = parseInt(argv[i + 1], 10);
+      if (Number.isFinite(n) && n > 0) { opt.sendQb = n; i++; }
+      else opt.sendQb = true;
+    }
     else if (a === '--top') opt.top = int(next(), 40);
     else if (a === '--sort') opt.sort = String(next() || 'seeds');
     else if (a === '--imdb') opt.imdb = String(next() || '');
@@ -142,6 +150,38 @@ async function main() {
   write(raw.txt, () => F.toTxt(out.results, true), 'txt');
   write(raw.magnets, () => F.toTxt(out.results, false), '磁力');
   write(raw.json, () => JSON.stringify(out.results, null, 2) + '\n', 'JSON');
+
+  if (raw.sendQb) await sendToQbittorrent(out.results, raw.sendQb);
+}
+
+/**
+ * 把结果推给 qBittorrent。
+ * --send-qb 不带值就推全部；带数字就只推种子数最多的前 N 条 ——
+ * 一次搜索动辄几百条，全推进去多半不是你想要的。
+ */
+async function sendToQbittorrent(results, howMany) {
+  const qbit = require('./qbit.js');
+  const config = require('./config.js');
+
+  const limit = howMany === true ? results.length : howMany;
+  const picked = results.filter((r) => r.magnet).slice(0, limit);
+  if (!picked.length) return info('没有可推送的磁力');
+
+  const cfg = config.load();
+  info('推送 ' + picked.length + ' 条到 qBittorrent (' + cfg.url + ') …');
+  try {
+    const client = qbit.createClient(cfg);
+    await client.login();
+    const r = await client.addMagnets(picked.map((x) => x.magnet), {
+      savepath: cfg.savepath,
+      category: cfg.category,
+    });
+    info('已推送 ' + r.count + ' 条');
+  } catch (e) {
+    info('推送失败: ' + (e.message || e));
+    info('用网页版的 qBittorrent 设置面板可以测试连接，或直接编辑 qbit.config.json');
+    process.exitCode = 1;
+  }
 }
 
 function write(file, build, label) {

@@ -171,6 +171,55 @@
   }
   .title-cell a { color: var(--ink); text-decoration: none; }
   .title-cell a:hover { color: var(--accent); }
+
+  /* ---------- 推送到 qBittorrent ---------- */
+  .dlbtn {
+    border: 1px solid var(--line); background: var(--panel-2); color: var(--muted);
+    border-radius: 6px; padding: 2px 8px; font-size: 12px; cursor: pointer;
+    font-family: inherit; line-height: 1.6;
+  }
+  .dlbtn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  .dlbtn:disabled { opacity: .5; cursor: default; }
+  .dlbtn.ok { border-color: var(--seed); color: var(--seed); }
+  .dlbtn.bad { border-color: var(--dead); color: var(--dead); }
+  .op { white-space: nowrap; }
+  .op > * { margin-left: 6px; }
+
+  .gear {
+    border: 1px solid var(--line); background: var(--panel-2); color: var(--muted);
+    border-radius: 8px; padding: 4px 10px; font-size: 12.5px; cursor: pointer;
+    font-family: inherit;
+  }
+  .gear:hover { border-color: var(--accent); color: var(--accent); }
+  .gear .qbdot { color: var(--faint); }
+  .gear .qbdot.on { color: var(--seed); }
+
+  dialog.settings {
+    border: 1px solid var(--line); border-radius: 12px; padding: 0;
+    background: var(--panel); color: var(--ink); max-width: 480px; width: calc(100% - 32px);
+  }
+  dialog.settings::backdrop { background: rgba(0,0,0,.5); }
+  .settings h3 { margin: 0; padding: 14px 18px; border-bottom: 1px solid var(--line); font-size: 15px; }
+  .settings .body { padding: 16px 18px; display: grid; gap: 12px; }
+  .settings label { display: grid; gap: 4px; font-size: 12.5px; color: var(--muted); }
+  .settings input {
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: 7px;
+    padding: 7px 10px; color: var(--ink); font: inherit; font-size: 13px;
+  }
+  .settings input:focus { border-color: var(--accent); outline: none; }
+  .settings .hint { font-size: 11.5px; color: var(--faint); line-height: 1.55; }
+  .settings .foot {
+    display: flex; gap: 8px; align-items: center; justify-content: flex-end;
+    padding: 12px 18px; border-top: 1px solid var(--line);
+  }
+  .settings .foot .msg { margin-right: auto; font-size: 12px; line-height: 1.5; }
+  .settings .foot .msg.ok { color: var(--seed); }
+  .settings .foot .msg.bad { color: var(--dead); }
+  .settings .foot button {
+    border-radius: 7px; padding: 6px 14px; font: inherit; font-size: 13px; cursor: pointer;
+    border: 1px solid var(--line); background: var(--panel-2); color: var(--ink);
+  }
+  .settings .foot button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   .title-cell .hash { color: var(--faint); font-size: 11px; margin-left: 8px; }
   .td-date { color: var(--faint); font-size: 12.5px; white-space: nowrap; }
   td.cb { width: 34px; padding-right: 2px; }
@@ -253,9 +302,48 @@
     </div>
     <div class="controls">
       <label class="mini">至少 <input id="minSeeds" type="number" min="0" value="0"> 种子</label>
+      <button class="gear" id="qbGear" title="配置 qBittorrent 连接">
+        <span class="qbdot" id="qbDot">●</span> qBittorrent
+      </button>
       <span class="count" id="count"></span>
     </div>
   </div>
+
+  <dialog class="settings" id="qbDialog">
+    <h3>qBittorrent 连接</h3>
+    <div class="body">
+      <label>
+        WebUI 地址
+        <input id="qbUrl" type="text" placeholder="http://127.0.0.1:8080" spellcheck="false">
+      </label>
+      <label>
+        用户名 <span class="hint">开了「对本机跳过认证」就留空</span>
+        <input id="qbUser" type="text" autocomplete="off" spellcheck="false">
+      </label>
+      <label>
+        密码 <span class="hint" id="qbPwHint"></span>
+        <input id="qbPass" type="password" autocomplete="new-password">
+      </label>
+      <label>
+        保存路径 <span class="hint">留空则用 qBittorrent 的默认下载目录</span>
+        <input id="qbPath" type="text" placeholder="D:\Downloads" spellcheck="false">
+      </label>
+      <label>
+        分类 <span class="hint">可选，对应 qBittorrent 里的分类</span>
+        <input id="qbCat" type="text" spellcheck="false">
+      </label>
+      <div class="hint">
+        地址填 qBittorrent「选项 → Web UI」里的地址和端口。密码存在本机的
+        <code>qbit.config.json</code>，不会进浏览器存储。
+      </div>
+    </div>
+    <div class="foot">
+      <span class="msg" id="qbMsg"></span>
+      <button id="qbTest">测试连接</button>
+      <button id="qbClose">关闭</button>
+      <button class="primary" id="qbSave">保存</button>
+    </div>
+  </dialog>
 
   <div class="progress" id="progress"></div>
 
@@ -504,9 +592,17 @@ function renderTable() {
     tdDate.textContent = fmtDate(r.date);
     tr.appendChild(tdDate);
 
-    // op (details link)
+    // op: 推送到 qBittorrent + 原页面链接
     const tdOp = document.createElement('td');
     tdOp.className = 'op';
+    if (r.magnet) {
+      const dl = document.createElement('button');
+      dl.className = 'dlbtn';
+      dl.textContent = '下载';
+      dl.title = '推送到 qBittorrent';
+      dl.addEventListener('click', () => sendToQb([r.magnet], dl));
+      tdOp.appendChild(dl);
+    }
     if (r.details) {
       const d = document.createElement('a');
       d.textContent = '↗';
@@ -523,13 +619,134 @@ function renderTable() {
   updateCount();
 }
 
+/* ---------- 推送到 qBittorrent ---------- */
+
+// 只缓存「是否已配置」用来点亮小圆点，密码始终留在服务端
+const qb = { configured: false };
+
+async function qbFetch(path, opts) {
+  const res = await fetch(path, opts);
+  let body = {};
+  try { body = await res.json(); } catch (e) { /* 非 JSON 就当空 */ }
+  if (!res.ok) {
+    const err = new Error(body.message || ('HTTP ' + res.status));
+    err.kind = body.kind;
+    throw err;
+  }
+  return body;
+}
+
+async function loadQbConfig() {
+  try {
+    const j = await qbFetch('/api/qb/config');
+    const c = j.config || {};
+    $('#qbUrl').value = c.url || '';
+    $('#qbUser').value = c.username || '';
+    $('#qbPath').value = c.savepath || '';
+    $('#qbCat').value = c.category || '';
+    $('#qbPwHint').textContent = c.hasPassword ? '已保存，留空则不修改' : '';
+    // 有地址就算配过了；用户名可以为空（本机免认证）
+    qb.configured = !!c.url;
+    $('#qbDot').classList.toggle('on', qb.configured);
+  } catch (e) {
+    // 配置读不出来不该拦住搜索功能，安静降级
+  }
+}
+
+/**
+ * 推送磁力。btn 是触发的按钮，用来就地反馈 —— 比弹 toast 更清楚是哪一条成功了。
+ */
+async function sendToQb(magnets, btn) {
+  const list = (magnets || []).filter(Boolean);
+  if (!list.length) return toast('没有可推送的磁力');
+
+  const old = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '推送中'; btn.classList.remove('ok', 'bad'); }
+
+  try {
+    const j = await qbFetch('/api/qb/add', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ magnets: list }),
+    });
+    if (btn) { btn.textContent = '已发送'; btn.classList.add('ok'); }
+    toast('已推送 ' + j.count + ' 条到 qBittorrent');
+    if (btn) setTimeout(() => { btn.disabled = false; btn.textContent = old; btn.classList.remove('ok'); }, 2500);
+  } catch (e) {
+    if (btn) { btn.textContent = '失败'; btn.classList.add('bad'); btn.disabled = false; }
+    toast('推送失败：' + e.message, 6000);
+    // 还没配置过就直接把设置面板拉出来，别让人自己猜
+    if (!qb.configured || e.kind === 'auth' || e.kind === 'network') openQbDialog();
+    if (btn) setTimeout(() => { btn.textContent = old; btn.classList.remove('bad'); }, 3000);
+  }
+}
+
+function qbMsg(text, cls) {
+  const el = $('#qbMsg');
+  el.textContent = text || '';
+  el.className = 'msg' + (cls ? ' ' + cls : '');
+}
+
+function openQbDialog() {
+  qbMsg('');
+  loadQbConfig().then(() => $('#qbDialog').showModal());
+}
+
+function wireQbDialog() {
+  $('#qbGear').addEventListener('click', openQbDialog);
+  $('#qbClose').addEventListener('click', () => $('#qbDialog').close());
+
+  const formValues = () => ({
+    url: $('#qbUrl').value.trim(),
+    username: $('#qbUser').value.trim(),
+    password: $('#qbPass').value,
+    savepath: $('#qbPath').value.trim(),
+    category: $('#qbCat').value.trim(),
+  });
+
+  $('#qbTest').addEventListener('click', async () => {
+    qbMsg('连接中…');
+    try {
+      const j = await qbFetch('/api/qb/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(formValues()),
+      });
+      qbMsg('连上了 · qBittorrent ' + j.version + ' · ' + j.auth, 'ok');
+    } catch (e) {
+      qbMsg(e.message, 'bad');
+    }
+  });
+
+  $('#qbSave').addEventListener('click', async () => {
+    try {
+      await qbFetch('/api/qb/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(formValues()),
+      });
+      $('#qbPass').value = '';
+      await loadQbConfig();
+      qbMsg('已保存', 'ok');
+    } catch (e) {
+      qbMsg('保存失败：' + e.message, 'bad');
+    }
+  });
+}
+
 function updateCount() {
   const sel = state.selected.size;
   $('#count').innerHTML =
     '显示 ' + state.order.length + ' / ' + state.rows.length +
     ' 条 · 已选 <b>' + sel + '</b>' +
     '<button class="copybtn" style="opacity:1;margin-left:10px" id="copySel" ' + (sel ? '' : 'disabled') + '>复制选中磁力</button>' +
-    '<button class="copybtn" style="opacity:1" id="copyAll">复制全部磁力</button>';
+    '<button class="copybtn" style="opacity:1" id="copyAll">复制全部磁力</button>' +
+    '<button class="copybtn" style="opacity:1" id="qbSel" ' + (sel ? '' : 'disabled') + '>发送选中到 qBittorrent</button>';
+  const qs = $('#qbSel');
+  if (qs) qs.addEventListener('click', () => {
+    const mags = state.rows.filter((r) => state.selected.has(rowId(r)) && r.magnet).map((r) => r.magnet);
+    sendToQb(mags, qs);
+  });
   const cs = $('#copySel'), ca = $('#copyAll');
   if (cs) cs.addEventListener('click', () => {
     const mags = state.rows.filter((r) => state.selected.has(rowId(r)) && r.magnet).map((r) => r.magnet);
@@ -638,12 +855,13 @@ async function search() {
 
 /* ---------- toast / copy ---------- */
 let toastTimer = 0;
-function toast(text) {
+// ms 可选：报错信息比「已复制」长得多，1.8 秒读不完
+function toast(text, ms) {
   const t = $('#toast');
   t.textContent = text;
   t.classList.add('show');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove('show'), 1800);
+  toastTimer = setTimeout(() => t.classList.remove('show'), ms || 1800);
 }
 async function copyText(text) {
   try {
@@ -661,6 +879,8 @@ async function copyText(text) {
 /* ---------- init ---------- */
 buildChips();
 buildHead();
+wireQbDialog();
+loadQbConfig();
 $('#searchForm').addEventListener('submit', (e) => { e.preventDefault(); search(); });
 $('#minSeeds').addEventListener('change', () => {
   state.minSeeds = parseInt($('#minSeeds').value || '0', 10) || 0;
