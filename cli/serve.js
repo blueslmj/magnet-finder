@@ -253,19 +253,19 @@ async function handleQbit(req, res, url) {
 
   if (action === 'add' && req.method === 'POST') {
     const body = await readJson(req);
-    const magnets = (body.magnets || []).filter((m) => typeof m === 'string' && m.startsWith('magnet:'));
+    const magnets = (Array.isArray(body.magnets) ? body.magnets : []).filter((m) => typeof m === 'string' && m.startsWith('magnet:'));
     if (!magnets.length) {
       return sendJson(res, 400, { ok: false, kind: 'api', message: '没有可推送的磁力链接' });
     }
     const cfg = config.load();
     const client = qbit.createClient(cfg);
     await client.login();
-    const r = await client.addMagnets(magnets, {
+    const r = await client.sendMagnets(magnets, {
       savepath: body.savepath || cfg.savepath,
       category: body.category || cfg.category,
       paused: !!body.paused,
     });
-    return sendJson(res, 200, { ok: true, count: r.count });
+    return sendJson(res, 200, { ok: true, ...r });
   }
 
   return sendJson(res, 404, { ok: false, message: '没有这个接口' });

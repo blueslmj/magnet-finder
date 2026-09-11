@@ -55,6 +55,30 @@ class QbitError extends Error {
   }
 }
 
+function magnetHash(magnet) {
+  try {
+    const url = new URL(magnet);
+    if (url.protocol !== 'magnet:') return '';
+    for (const xt of url.searchParams.getAll('xt')) {
+      const match = /^urn:btih:([a-f0-9]{40}|[a-z2-7]{32})$/i.exec(xt);
+      if (!match) continue;
+      const hash = match[1].toUpperCase();
+      if (hash.length === 40) return hash.toLowerCase();
+      let bits = 0, value = 0, hex = '';
+      for (const ch of hash) {
+        value = (value << 5) | 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'.indexOf(ch);
+        bits += 5;
+        if (bits >= 8) {
+          bits -= 8;
+          hex += ((value >>> bits) & 255).toString(16).padStart(2, '0');
+        }
+      }
+      return hex;
+    }
+  } catch (_) { /* 无效磁力交给发送结果逐条报告 */ }
+  return '';
+}
+
 /**
  * 顺着 error.cause 链和 AggregateError.errors 把底层 errno 挖出来。
  *
@@ -203,7 +227,10 @@ function createClient(opts) {
     if (a.savepath) form.append('savepath', String(a.savepath));
     if (a.category) form.append('category', String(a.category));
     if (a.tags) form.append('tags', String(a.tags));
-    if (a.paused) form.append('paused', 'true');
+    // 4.x 使用 paused，5.x 使用 stopped；显式覆盖客户端的默认暂停设置。
+    form.append('paused', String(!!a.paused));
+    form.append('stopped', String(!!a.paused));
+    if (!a.paused) form.append('stopCondition', 'None');
 
     const res = await call('/api/v2/torrents/add', { method: 'POST', body: form });
     const text = (await res.text()).trim();
@@ -214,6 +241,104 @@ function createClient(opts) {
       throw new QbitError('qBittorrent 拒绝了这批磁力: ' + text, 'api');
     }
     return { count: list.length };
+  }
+
+  async function torrentInfo(hashes) {
+    const found = new Map();
+    for (let i = 0; i < hashes.length; i += 50) {
+      const query = new URLSearchParams({ hashes: hashes.slice(i, i + 50).join('|') });
+      const res = await call('/api/v2/torrents/info?' + query);
+      if (!res.ok) throw new QbitError('核对任务失败: HTTP ' + res.status, 'api');
+      let rows;
+      try { rows = JSON.parse(await res.text()); } catch (_) { /* 下方统一校验 */ }
+      if (!Array.isArray(rows)) throw new QbitError('qBittorrent 返回了无效的任务列表', 'api');
+      for (const row of rows) found.set(String(row.hash).toLowerCase(), row);
+    }
+    return found;
+  }
+
+  async function startTorrents(hashes) {
+    if (!hashes.length) return;
+    const init = {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ hashes: hashes.join('|') }).toString(),
+    };
+    let res = await call('/api/v2/torrents/start', init);
+    if (res.status === 404) res = await call('/api/v2/torrents/resume', init);
+    if (!res.ok) throw new QbitError('启动任务失败: HTTP ' + res.status, 'api');
+  }
+
+  /** Ok. 只表示请求被接收；查任务列表才能确认每条磁力是否已添加。 */
+  async function sendMagnets(magnets, addOpts) {
+    const items = [];
+    const seen = new Set();
+    for (const magnet of magnets) {
+      const hash = magnetHash(magnet);
+      const key = hash || magnet;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      items.push({ magnet, hash, status: hash ? 'pending' : 'failed',
+        message: hash ? '' : '无效或暂不支持的磁力 infohash' });
+    }
+    if (!items.length) throw new QbitError('没有可推送的磁力链接', 'api');
+    const hashes = items.filter((i) => i.hash).map((i) => i.hash);
+    const before = await torrentInfo(hashes);
+    const fresh = items.filter((i) => i.hash && !before.has(i.hash));
+    let addError = null;
+    if (fresh.length) {
+      try { await addMagnets(fresh.map((i) => i.magnet), addOpts); }
+      catch (e) { addError = e; }
+    }
+    let after = new Map(before), verifyError = null;
+    const sleep = o.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    for (let attempt = 0; attempt < 4; attempt++) {
+      if (attempt) await sleep(700);
+      try { after = await torrentInfo(hashes); verifyError = null; }
+      catch (e) { verifyError = e; break; }
+      if (hashes.every((hash) => after.has(hash))) break;
+    }
+    const stopped = (row) => /^(paused|stopped)(DL|UP)$/.test(row.state);
+    const toStart = hashes.filter((hash) => {
+      const row = after.get(hash);
+      return row && stopped(row) && Number(row.progress) < 1;
+    });
+    let startError = null;
+    if (!addOpts?.paused && toStart.length) {
+      try {
+        await startTorrents(toStart);
+        for (let attempt = 0; attempt < 3; attempt++) {
+          await sleep(400);
+          after = await torrentInfo(hashes);
+          if (toStart.every((hash) => after.has(hash) && !stopped(after.get(hash)))) break;
+        }
+      } catch (e) { startError = e; }
+    }
+    for (const item of items) {
+      if (!item.hash) continue;
+      const row = after.get(item.hash);
+      if (!row) {
+        item.status = addError && addError.kind !== 'network' && !verifyError ? 'failed' : 'pending';
+        item.message = verifyError ? '已尝试发送，但无法核对：' + verifyError.message
+          : addError ? addError.message : '请求已接收，暂未在任务列表确认；可再次发送核对';
+        continue;
+      }
+      item.status = before.has(item.hash) ? 'existing' : 'added';
+      item.name = row.name || '';
+      item.state = row.state;
+      item.progress = row.progress;
+      if (verifyError) item.message = '状态核对失败：' + verifyError.message;
+      if (startError && toStart.includes(item.hash)) item.message = startError.message;
+      else if (!addOpts?.paused && stopped(row) && Number(row.progress) < 1) {
+        item.message = '任务仍处于停止状态，请检查 qBittorrent 的任务设置';
+      }
+      if (row.state === 'error' || row.state === 'missingFiles') {
+        item.message = 'qBittorrent 报告文件或磁盘错误，请检查保存路径、空间和权限';
+      }
+    }
+    const result = { count: items.length, added: 0, existing: 0, failed: 0, pending: 0, items };
+    for (const item of items) result[item.status]++;
+    return result;
   }
 
   /** 连接测试：登录 + 取版本，把结果打包成给用户看的信息 */
@@ -233,6 +358,7 @@ function createClient(opts) {
     login: login,
     version: version,
     addMagnets: addMagnets,
+    sendMagnets: sendMagnets,
     test: test,
     get sid() {
       return sid;
@@ -240,4 +366,4 @@ function createClient(opts) {
   };
 }
 
-module.exports = { createClient, normalizeUrl, readSid, QbitError };
+module.exports = { createClient, normalizeUrl, readSid, QbitError, magnetHash };

@@ -172,11 +172,15 @@ async function sendToQbittorrent(results, howMany) {
   try {
     const client = qbit.createClient(cfg);
     await client.login();
-    const r = await client.addMagnets(picked.map((x) => x.magnet), {
+    const r = await client.sendMagnets(picked.map((x) => x.magnet), {
       savepath: cfg.savepath,
       category: cfg.category,
     });
-    info('已推送 ' + r.count + ' 条');
+    info('新增 ' + r.added + ' 条，已存在 ' + r.existing + ' 条，失败 ' + r.failed + ' 条，待确认 ' + r.pending + ' 条');
+    for (const item of r.items) {
+      if (item.message) info((item.name || item.hash || '无效磁力') + ': ' + item.message);
+    }
+    if (r.failed || r.pending || r.items.some((item) => item.message)) process.exitCode = 1;
   } catch (e) {
     info('推送失败: ' + (e.message || e));
     info('用网页版的 qBittorrent 设置面板可以测试连接，或直接编辑 qbit.config.json');

@@ -114,6 +114,9 @@ test('推送磁力：多条用换行拼进 urls 字段', async () => {
   const form = f.calls[0].init.body;
   assert.strictEqual(form.get('urls'), 'magnet:?xt=urn:btih:aaa\nmagnet:?xt=urn:btih:bbb');
   assert.strictEqual(f.calls[0].init.method, 'POST');
+  assert.strictEqual(form.get('paused'), 'false');
+  assert.strictEqual(form.get('stopped'), 'false');
+  assert.strictEqual(form.get('stopCondition'), 'None');
 });
 
 test('保存路径/分类只在填了的时候才发出去', async () => {
@@ -153,4 +156,141 @@ test('连接测试返回版本和认证方式', async () => {
   assert.strictEqual(r.version, 'v5.0.4');
   assert.strictEqual(r.url, 'http://127.0.0.1:8080');
   assert.match(r.auth, /已登录 admin/);
+});
+
+const HASH_A = 'a'.repeat(40), HASH_B = 'b'.repeat(40);
+const mag = (hash) => 'magnet:?xt=urn:btih:' + hash;
+function task(hash, state = 'downloading', progress = 0) {
+  return { hash, state, progress, name: 'Example ' + hash[0] };
+}
+function taskClient(options = {}) {
+  const rows = new Map((options.existing || []).map((row) => [row.hash, { ...row }]));
+  const calls = [];
+  let reads = 0;
+  const fetch = async (url, init) => {
+    const path = new URL(url).pathname;
+    calls.push({ path, body: init.body });
+    if (path.endsWith('/info')) {
+      reads++;
+      if (options.verifyFails && reads > 1) return new Response('down', { status: 500 });
+      return new Response(JSON.stringify([...rows.values()]));
+    }
+    if (path.endsWith('/add')) {
+      if (!options.ignoreAdd) {
+        for (const link of init.body.get('urls').split('\n')) {
+          const hash = Q.magnetHash(link);
+          rows.set(hash, task(hash, options.addState || 'downloading'));
+        }
+      }
+      if (options.addTimeout) throw new Error('connection lost');
+      return new Response(options.addReply || 'Ok.');
+    }
+    if (path.endsWith('/start') && options.legacy) return new Response('', { status: 404 });
+    if (/\/(start|resume)$/.test(path)) {
+      if (options.startFails) return new Response('', { status: 500 });
+      if (!options.ignoreStart) {
+        for (const hash of new URLSearchParams(init.body).get('hashes').split('|')) {
+          rows.get(hash).state = 'downloading';
+        }
+      }
+      return new Response('');
+    }
+    throw new Error('unexpected ' + path);
+  };
+  return { client: Q.createClient({ url: 'http://localhost:8080', fetch, sleep: async () => {} }), calls };
+}
+
+test('新增和已存在分开计数；同 infohash 不重复添加', async () => {
+  const { client, calls } = taskClient({ existing: [task(HASH_A)] });
+  const result = await client.sendMagnets([mag(HASH_A), mag(HASH_B), mag(HASH_B) + '&dn=other']);
+  assert.strictEqual(result.added, 1);
+  assert.strictEqual(result.existing, 1);
+  assert.strictEqual(result.count, 2);
+  assert.strictEqual(calls.find((c) => c.path.endsWith('/add')).body.get('urls'), mag(HASH_B));
+  assert.strictEqual(result.items[1].state, 'downloading');
+});
+
+test('已存在且停止的未完成任务自动启动，不重加、不启动无关或已完成任务', async () => {
+  const { client, calls } = taskClient({ existing: [task(HASH_A, 'stoppedDL'), task(HASH_B, 'stoppedUP', 1)] });
+  const result = await client.sendMagnets([mag(HASH_A), mag(HASH_B)]);
+  assert.strictEqual(result.existing, 2);
+  assert.ok(!calls.some((c) => c.path.endsWith('/add')));
+  assert.strictEqual(new URLSearchParams(calls.find((c) => c.path.endsWith('/start')).body).get('hashes'), HASH_A);
+  assert.strictEqual(result.items[0].state, 'downloading');
+});
+
+test('4.x 在 start 不存在时回退 resume，新增任务也会检查启动状态', async () => {
+  const { client, calls } = taskClient({ addState: 'pausedDL', legacy: true });
+  const result = await client.sendMagnets([mag(HASH_A)]);
+  assert.ok(calls.some((c) => c.path.endsWith('/resume')));
+  assert.strictEqual(result.items[0].state, 'downloading');
+});
+
+test('只收到 Ok. 但列表里没出现的任务标待确认，不能报新增成功', async () => {
+  const { client } = taskClient({ ignoreAdd: true });
+  const result = await client.sendMagnets([mag(HASH_A)]);
+  assert.strictEqual(result.added, 0);
+  assert.strictEqual(result.pending, 1);
+});
+
+test('混合无效磁力和有效任务逐条反馈', async () => {
+  const { client } = taskClient();
+  const result = await client.sendMagnets(['magnet:?xt=bad', mag(HASH_A)]);
+  assert.strictEqual(result.failed, 1);
+  assert.strictEqual(result.added, 1);
+});
+
+test('明确拒绝且未添加时报失败；网络中断但任务已出现时仍报告已添加', async () => {
+  const rejected = taskClient({ ignoreAdd: true, addReply: 'Fails.' });
+  assert.strictEqual((await rejected.client.sendMagnets([mag(HASH_A)])).failed, 1);
+  const accepted = taskClient({ addTimeout: true });
+  assert.strictEqual((await accepted.client.sendMagnets([mag(HASH_A)])).added, 1);
+});
+
+test('核对接口失败时不冒充新增成功', async () => {
+  const { client } = taskClient({ verifyFails: true });
+  const result = await client.sendMagnets([mag(HASH_A)]);
+  assert.strictEqual(result.pending, 1);
+  assert.match(result.items[0].message, /无法核对/);
+});
+
+test('启动失败保留已添加事实，并反馈启动错误', async () => {
+  const { client, calls } = taskClient({ addState: 'stoppedDL', startFails: true });
+  const result = await client.sendMagnets([mag(HASH_A)]);
+  assert.strictEqual(result.added, 1);
+  assert.match(result.items[0].message, /启动任务失败/);
+  assert.ok(!calls.some((c) => c.path.endsWith('/resume')));
+});
+
+test('启动返回成功但仍停止时，不声称正在下载', async () => {
+  const { client } = taskClient({ addState: 'stoppedDL', ignoreStart: true });
+  const result = await client.sendMagnets([mag(HASH_A)]);
+  assert.strictEqual(result.items[0].state, 'stoppedDL');
+  assert.match(result.items[0].message, /仍处于停止/);
+});
+
+test('排队、等资源和磁盘错误保留实际状态，不强制插队', async () => {
+  for (const state of ['queuedDL', 'stalledDL', 'metaDL', 'error', 'missingFiles']) {
+    const { client, calls } = taskClient({ addState: state });
+    const result = await client.sendMagnets([mag(HASH_A)]);
+    assert.strictEqual(result.items[0].state, state);
+    assert.ok(!calls.some((c) => /\/(start|resume|setForceStart)$/.test(c.path)));
+    if (state === 'error' || state === 'missingFiles') assert.match(result.items[0].message, /磁盘/);
+  }
+});
+
+test('明确要求暂停时保留暂停行为', async () => {
+  const { client, calls } = taskClient({ addState: 'stoppedDL' });
+  await client.sendMagnets([mag(HASH_A)], { paused: true });
+  const form = calls.find((c) => c.path.endsWith('/add')).body;
+  assert.strictEqual(form.get('paused'), 'true');
+  assert.strictEqual(form.get('stopped'), 'true');
+  assert.ok(!calls.some((c) => c.path.endsWith('/start')));
+});
+
+test('infohash 支持大小写、转义及 Base32；无效输入不误认', () => {
+  assert.strictEqual(Q.magnetHash('magnet:?xt=urn%3Abtih%3A' + HASH_A.toUpperCase()), HASH_A);
+  assert.strictEqual(Q.magnetHash(mag('A'.repeat(32))), '0'.repeat(40));
+  assert.strictEqual(Q.magnetHash(mag('7'.repeat(32))), 'f'.repeat(40));
+  assert.strictEqual(Q.magnetHash('magnet:?xt=urn:btih:abc'), '');
 });

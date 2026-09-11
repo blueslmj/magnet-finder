@@ -112,7 +112,7 @@
     margin-bottom: 14px; padding: 12px 14px;
     background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
   }
-  .swarm { flex: 1 1 260px; min-width: 220px; }
+  .swarm { flex: 1 1 260px; min-width: 0; }
   .swarm-label { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
   .swarm-bar { display: flex; gap: 3px; height: 24px; }
   .seg {
@@ -136,8 +136,44 @@
     width: 58px; background: var(--panel-2); color: var(--ink);
     border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; font-size: 13px;
   }
-  .count { font-size: 13px; color: var(--muted); }
+  .count {
+    flex: 1 0 100%; display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; flex-wrap: wrap; padding-top: 12px; border-top: 1px solid var(--line);
+    font-size: 13px; color: var(--muted);
+  }
   .count b { color: var(--ink); font-weight: 650; }
+  .result-stats { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .selection-count { padding: 4px 9px; border-radius: 5px; background: var(--panel-2); }
+  .selection-count.has-selection { background: var(--sel); color: var(--accent); }
+  .batch-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .batch-btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+    min-height: 38px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 7px;
+    background: var(--panel-2); color: var(--ink); font-size: 13px; font-weight: 600;
+  }
+  .batch-btn svg { width: 16px; height: 16px; flex: none; }
+  .batch-btn:hover:not(:disabled) { border-color: var(--accent); background: var(--sel); }
+  .batch-btn.primary { background: #2b6ce0; border-color: #2b6ce0; color: #fff; }
+  .batch-btn.primary:hover:not(:disabled) { background: #2059bc; border-color: #2059bc; }
+  .batch-btn:disabled { opacity: .45; cursor: not-allowed; }
+  .batch-btn:focus-visible { outline-offset: 3px; }
+  .qb-report {
+    margin: 0 0 14px; padding: 14px; background: var(--panel); border: 1px solid var(--line);
+    border-left: 4px solid var(--accent); border-radius: 8px; overflow-wrap: anywhere;
+  }
+  .qb-report[data-kind="bad"] { border-left-color: var(--dead); }
+  .qb-report[data-kind="warning"] { border-left-color: var(--weak); }
+  .qb-report[data-kind="ok"] { border-left-color: var(--seed); }
+  .qb-report p { margin: 5px 0; color: var(--muted); }
+  .qb-report summary { cursor: pointer; padding: 6px 0; color: var(--accent); }
+  .qb-report ul { margin: 4px 0 0; padding-left: 22px; max-height: 260px; overflow: auto; }
+  .qb-report li { padding: 5px 0; }
+  @media (max-width: 640px) {
+    .toolbar .controls { width: 100%; justify-content: space-between; }
+    .batch-actions { width: 100%; }
+    .batch-btn { flex: 1 1 auto; min-height: 42px; }
+    .batch-btn.primary { flex-basis: 100%; }
+  }
 
   /* ---------- table ---------- */
   .tblwrap {
@@ -222,8 +258,8 @@
   .settings .foot button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   .title-cell .hash { color: var(--faint); font-size: 11px; margin-left: 8px; }
   .td-date { color: var(--faint); font-size: 12.5px; white-space: nowrap; }
-  td.cb { width: 34px; padding-right: 2px; }
-  td.cb input { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; }
+  th.cb, td.cb { width: 34px; padding-right: 2px; }
+  .cb input { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; }
   td.op { width: 30px; text-align: center; }
   .copybtn {
     background: none; border: 0; color: var(--faint); font-size: 14px; opacity: 0;
@@ -303,11 +339,19 @@
     <div class="controls">
       <label class="mini">至少 <input id="minSeeds" type="number" min="0" value="0"> 种子</label>
       <button class="gear" id="qbGear" title="配置 qBittorrent 连接">
-        <span class="qbdot" id="qbDot">●</span> qBittorrent
+        <span class="qbdot" id="qbDot">●</span> qBittorrent 设置
       </button>
-      <span class="count" id="count"></span>
     </div>
+    <div class="count" id="count"></div>
   </div>
+
+  <section class="qb-report" id="qbReport" hidden tabindex="-1" aria-label="qBittorrent 发送结果">
+    <div id="qbReportStatus" role="status" aria-live="polite" aria-atomic="true"></div>
+    <details id="qbReportDetails" hidden>
+      <summary>查看逐条结果</summary>
+      <ul id="qbReportItems"></ul>
+    </details>
+  </section>
 
   <dialog class="settings" id="qbDialog">
     <h3>qBittorrent 连接</h3>
@@ -460,6 +504,22 @@ function buildHead() {
   const tr = document.createElement('tr');
   for (const h of HEADS) {
     const th = document.createElement('th');
+    if (h.key === 'cb') {
+      th.className = 'cb';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.id = 'selectAll';
+      cb.title = '全选当前显示的结果';
+      cb.setAttribute('aria-label', '全选当前显示的结果');
+      cb.addEventListener('change', () => {
+        for (const i of state.order) {
+          const id = rowId(state.rows[i]);
+          cb.checked ? state.selected.add(id) : state.selected.delete(id);
+        }
+        renderTable();
+      });
+      th.appendChild(cb);
+    }
     if (h.label) th.textContent = h.label;
     if (h.num) th.classList.add('num');
     if (h.sortable) {
@@ -482,6 +542,17 @@ function buildHead() {
     tr.appendChild(th);
   }
   $('#thead').replaceChildren(tr);
+  updateSelectAll();
+}
+
+function updateSelectAll() {
+  const cb = $('#selectAll');
+  if (!cb) return;
+  const total = state.order.length;
+  const selected = state.order.filter((i) => state.selected.has(rowId(state.rows[i]))).length;
+  cb.checked = total > 0 && selected === total;
+  cb.indeterminate = selected > 0 && selected < total;
+  cb.disabled = total === 0;
 }
 
 /* ---------- filtering + sorting ---------- */
@@ -600,6 +671,12 @@ function renderTable() {
       dl.className = 'dlbtn';
       dl.textContent = '下载';
       dl.title = '推送到 qBittorrent';
+      const sent = qb.results.get(r.magnet);
+      if (sent) {
+        dl.textContent = qbResultLabel(sent);
+        dl.title = qbStateLabel(sent.state) + (sent.message ? '：' + sent.message : '') + '；点击可再次核对并启动未完成任务';
+      }
+      dl.disabled = qb.sending;
       dl.addEventListener('click', () => sendToQb([r.magnet], dl));
       tdOp.appendChild(dl);
     }
@@ -622,13 +699,13 @@ function renderTable() {
 /* ---------- 推送到 qBittorrent ---------- */
 
 // 只缓存「是否已配置」用来点亮小圆点，密码始终留在服务端
-const qb = { configured: false };
+const qb = { configured: false, sending: false, results: new Map() };
 
 async function qbFetch(path, opts) {
   const res = await fetch(path, opts);
   let body = {};
   try { body = await res.json(); } catch (e) { /* 非 JSON 就当空 */ }
-  if (!res.ok) {
+  if (!res.ok || body.ok === false) {
     const err = new Error(body.message || ('HTTP ' + res.status));
     err.kind = body.kind;
     throw err;
@@ -653,15 +730,44 @@ async function loadQbConfig() {
   }
 }
 
-/**
- * 推送磁力。btn 是触发的按钮，用来就地反馈 —— 比弹 toast 更清楚是哪一条成功了。
- */
+function qbResultLabel(item) {
+  return { added: '已添加', existing: '已存在', failed: '发送失败', pending: '待确认' }[item.status] || '待确认';
+}
+
+function qbStateLabel(value) {
+  return {
+    downloading: '正在下载', forcedDL: '正在下载', metaDL: '获取元数据', forcedMetaDL: '获取元数据',
+    stalledDL: '等待可用资源', queuedDL: '排队等待下载', checkingDL: '校验中', checkingResumeData: '检查恢复数据',
+    pausedDL: '已暂停', stoppedDL: '已停止', pausedUP: '已完成（暂停）', stoppedUP: '已完成（停止）',
+    uploading: '已完成，正在做种', stalledUP: '已完成，等待上传', queuedUP: '已完成，排队做种',
+    forcedUP: '已完成，正在做种', checkingUP: '校验中', moving: '移动文件中',
+    error: '文件或磁盘错误', missingFiles: '文件缺失',
+  }[value] || value || '状态待确认';
+}
+
+function showQbReport(title, message, kind) {
+  const report = $('#qbReport');
+  report.hidden = false;
+  report.dataset.kind = kind;
+  const heading = document.createElement('strong');
+  heading.textContent = title;
+  const detail = document.createElement('p');
+  detail.textContent = message;
+  $('#qbReportStatus').replaceChildren(heading, detail);
+}
+
 async function sendToQb(magnets, btn) {
+  if (qb.sending) return;
   const list = (magnets || []).filter(Boolean);
   if (!list.length) return toast('没有可推送的磁力');
-
-  const old = btn ? btn.textContent : '';
-  if (btn) { btn.disabled = true; btn.textContent = '推送中'; btn.classList.remove('ok', 'bad'); }
+  const titles = new Map(state.rows.map((r) => [r.magnet, r.title]));
+  qb.sending = true;
+  renderTable();
+  showQbReport('正在发送 ' + list.length + ' 条任务…', '正在连接 qBittorrent、核对已有任务并启动下载，请稍候。', 'pending');
+  $('#qbReportDetails').hidden = true;
+  $('#qbReportItems').replaceChildren();
+  $('#qbReport').scrollIntoView({ block: 'nearest' });
+  $('#qbReport').focus({ preventScroll: true });
 
   try {
     const j = await qbFetch('/api/qb/add', {
@@ -669,15 +775,26 @@ async function sendToQb(magnets, btn) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ magnets: list }),
     });
-    if (btn) { btn.textContent = '已发送'; btn.classList.add('ok'); }
-    toast('已推送 ' + j.count + ' 条到 qBittorrent');
-    if (btn) setTimeout(() => { btn.disabled = false; btn.textContent = old; btn.classList.remove('ok'); }, 2500);
+    if (!Array.isArray(j.items)) throw new Error('搜索服务版本过旧，请重启 magnet-finder 后再试；本次发送结果尚未确认');
+    const warning = j.failed || j.pending || j.items.some((item) => item.message);
+    const summary = '新增 ' + j.added + ' 条 · 已存在 ' + j.existing + ' 条 · 失败 ' + j.failed + ' 条 · 待确认 ' + j.pending + ' 条';
+    showQbReport(summary, '以下为本次发送后核对的状态。排队、获取元数据或等待资源时，暂时可能没有下载速度。', warning ? 'warning' : 'ok');
+    for (const item of j.items) {
+      qb.results.set(item.magnet, item);
+      const li = document.createElement('li');
+      li.textContent = qbResultLabel(item) + (item.state ? ' · ' + qbStateLabel(item.state) : '') + ' — ' +
+        (titles.get(item.magnet) || item.name || item.hash || '无效磁力') + (item.message ? '：' + item.message : '');
+      $('#qbReportItems').appendChild(li);
+    }
+    $('#qbReportDetails').hidden = false;
+    $('#qbReportDetails').open = true;
+    toast(summary, 6000);
   } catch (e) {
-    if (btn) { btn.textContent = '失败'; btn.classList.add('bad'); btn.disabled = false; }
-    toast('推送失败：' + e.message, 6000);
-    // 还没配置过就直接把设置面板拉出来，别让人自己猜
-    if (!qb.configured || e.kind === 'auth' || e.kind === 'network') openQbDialog();
-    if (btn) setTimeout(() => { btn.textContent = old; btn.classList.remove('bad'); }, 3000);
+    showQbReport('发送未完成', e.message + '。若连接中途断开，任务可能已被接收；再次发送会先核对已有任务。连接设置可在上方 qBittorrent 设置中检查。', 'bad');
+    toast('发送未完成：' + e.message, 6000);
+  } finally {
+    qb.sending = false;
+    renderTable();
   }
 }
 
@@ -735,14 +852,21 @@ function wireQbDialog() {
 }
 
 function updateCount() {
+  updateSelectAll();
   const sel = state.selected.size;
+  const total = state.rows.filter((r) => r.magnet).length;
+  const copyIcon = '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V4H4v12h4"/></svg>';
+  const sendIcon = '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3v12m-5-5 5 5 5-5M4 15v5h16v-5"/></svg>';
   $('#count').innerHTML =
-    '显示 ' + state.order.length + ' / ' + state.rows.length +
-    ' 条 · 已选 <b>' + sel + '</b>' +
-    '<button class="copybtn" style="opacity:1;margin-left:10px" id="copySel" ' + (sel ? '' : 'disabled') + '>复制选中磁力</button>' +
-    '<button class="copybtn" style="opacity:1" id="copyAll">复制全部磁力</button>' +
-    '<button class="copybtn" style="opacity:1" id="qbSel" ' + (sel ? '' : 'disabled') + '>发送选中到 qBittorrent</button>';
+    '<div class="result-stats"><span>显示 <b>' + state.order.length + '</b> / ' + state.rows.length +
+    ' 条</span><span class="selection-count' + (sel ? ' has-selection' : '') + '">已选 <b>' + sel + '</b> 条</span></div>' +
+    '<div class="batch-actions" role="group" aria-label="批量磁力操作">' +
+    '<button type="button" class="batch-btn" id="copySel" title="复制已勾选结果的磁力链接" ' + (sel ? '' : 'disabled') + '>' + copyIcon + '复制选中磁力</button>' +
+    '<button type="button" class="batch-btn" id="copyAll" title="复制全部搜索结果的磁力链接，包含筛选隐藏的结果" ' + (total ? '' : 'disabled') + '>' + copyIcon + '复制全部（' + total + '）</button>' +
+    '<button type="button" class="batch-btn primary" id="qbSel" title="将已勾选结果发送到 qBittorrent" ' + (sel ? '' : 'disabled') + '>' + sendIcon + '发送选中到 qBittorrent</button></div>';
   const qs = $('#qbSel');
+  qs.disabled = !sel || qb.sending;
+  if (qb.sending) qs.textContent = '正在发送…';
   if (qs) qs.addEventListener('click', () => {
     const mags = state.rows.filter((r) => state.selected.has(rowId(r)) && r.magnet).map((r) => r.magnet);
     sendToQb(mags, qs);
@@ -879,6 +1003,7 @@ async function copyText(text) {
 /* ---------- init ---------- */
 buildChips();
 buildHead();
+updateCount();
 wireQbDialog();
 loadQbConfig();
 $('#searchForm').addEventListener('submit', (e) => { e.preventDefault(); search(); });

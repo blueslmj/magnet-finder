@@ -83,3 +83,54 @@ test('请求体不是合法 JSON 时报清楚的错', async () => {
     assert.match(j.message, /合法 JSON/);
   });
 });
+
+test('发送接口返回逐条新增、已存在及实际状态，显式启动新任务', async () => {
+  const http = require('node:http');
+  const hashA = 'a'.repeat(40), hashB = 'b'.repeat(40);
+  let added = false;
+  let multipart = '';
+  const mock = http.createServer(async (req, res) => {
+    if (req.url.endsWith('/auth/login')) {
+      req.resume();
+      res.setHeader('Set-Cookie', 'SID=test; Path=/');
+      return res.end('Ok.');
+    }
+    if (req.url.startsWith('/api/v2/torrents/info?')) {
+      res.setHeader('Content-Type', 'application/json');
+      return res.end(JSON.stringify([
+        { hash: hashA, name: 'Existing', state: 'downloading', progress: 0.1 },
+        ...(added ? [{ hash: hashB, name: 'New', state: 'metaDL', progress: 0 }] : []),
+      ]));
+    }
+    if (req.url.endsWith('/torrents/add')) {
+      for await (const chunk of req) multipart += chunk.toString();
+      added = true;
+      return res.end('Ok.');
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  await new Promise((resolve) => mock.listen(0, '127.0.0.1', resolve));
+  const previous = process.env.QB_URL;
+  process.env.QB_URL = 'http://127.0.0.1:' + mock.address().port;
+  try {
+    await withServer(async (base) => {
+      const res = await fetch(base + '/api/qb/add', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ magnets: [hashA, hashB].map((hash) => 'magnet:?xt=urn:btih:' + hash) }),
+      });
+      const result = await res.json();
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(result.added, 1);
+      assert.strictEqual(result.existing, 1);
+      assert.strictEqual(result.items[1].state, 'metaDL');
+      assert.match(multipart, /name="paused"\r\n\r\nfalse/);
+      assert.match(multipart, /name="stopped"\r\n\r\nfalse/);
+      assert.ok(!multipart.includes(hashA));
+    });
+  } finally {
+    if (previous === undefined) delete process.env.QB_URL;
+    else process.env.QB_URL = previous;
+    await new Promise((resolve) => mock.close(resolve));
+  }
+});
