@@ -29,6 +29,78 @@ function parsePort(argv) {
   return port;
 }
 
+/**
+ * 监听地址。默认只绑回环 —— 这服务能替你发请求、还能控制 qBittorrent，
+ * 不该默认对外可见。--host 0.0.0.0 或 --lan 才放开到局域网。
+ */
+function parseHost(argv) {
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--host') return String(argv[i + 1] || '127.0.0.1');
+    if (argv[i] === '--lan') return '0.0.0.0';
+  }
+  return '127.0.0.1';
+}
+
+function isLoopback(host) {
+  return host === '127.0.0.1' || host === 'localhost' || host === '::1';
+}
+
+// VMware / Hyper-V / VirtualBox / WSL 的虚拟网卡也算「非内部 IPv4」，
+// 会跟真实局域网地址混在一起列出来。按接口名认出来标注掉，
+// 否则用户面对四五个地址根本不知道该用哪个。
+const VIRTUAL_IFACE_RE =
+  /vmware|vmnet|virtualbox|vboxnet|hyper-?v|vethernet|wsl|loopback|tailscale|zerotier|docker|tap-?windows|npcap/i;
+
+/**
+ * 列出本机可供局域网访问的 IPv4 地址。
+ * 返回 { ip, iface, virtual }，virtual 为真表示多半是虚拟网卡、不是你要的那个。
+ * 真实网卡排在前面。
+ */
+function lanAddresses() {
+  const out = [];
+  const ifaces = require('os').networkInterfaces();
+  for (const name of Object.keys(ifaces)) {
+    for (const ni of ifaces[name] || []) {
+      if (ni.family !== 'IPv4' || ni.internal) continue;
+      out.push({ ip: ni.address, iface: name, virtual: VIRTUAL_IFACE_RE.test(name) });
+    }
+  }
+  out.sort((a, b) => Number(a.virtual) - Number(b.virtual));
+  return out;
+}
+
+/**
+ * 跨站请求防护。绑到局域网后，你浏览器打开的任意外部网页都可能
+ * 让浏览器向本服务发请求（DNS rebinding / CSRF）—— 而本服务能控制 qBittorrent。
+ *
+ * 两道检查，任一不过就拒：
+ *   1. Origin 存在但跟请求的 Host 不一致 → 跨站，拒。浏览器的跨站请求一定带 Origin
+ *   2. 写接口必须是 application/json → 这类请求会触发 CORS 预检，
+ *      而我们不返回放行头，浏览器自己就把它拦了。
+ *      text/plain 的 POST 属于「简单请求」不走预检，所以必须在这里挡住
+ */
+function crossSiteReject(req) {
+  const origin = req.headers.origin;
+  if (origin) {
+    let originHost = '';
+    try {
+      originHost = new URL(origin).host;
+    } catch (e) {
+      return '请求来源(Origin)格式不对';
+    }
+    if (originHost !== req.headers.host) {
+      return '拒绝跨站请求：Origin ' + origin + ' 与本服务地址不符';
+    }
+  }
+  if (req.method !== 'GET') {
+    const ct = String(req.headers['content-type'] || '');
+    if (!/^application\/json\b/.test(ct)) {
+      return '写接口要求 Content-Type: application/json';
+    }
+  }
+  return '';
+}
+
 const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
@@ -219,19 +291,33 @@ function createServer() {
     }
     if (url.pathname === '/api/stream') return streamSearch(req, res, url);
     if (url.pathname.startsWith('/api/qb/')) {
+      const reject = crossSiteReject(req);
+      if (reject) return sendJson(res, 403, { ok: false, kind: 'csrf', message: reject });
       return handleQbit(req, res, url).catch((e) => sendError(res, e));
     }
     return serveStatic(req, res, url.pathname);
   });
 }
 
-// 只监听回环地址：这东西本质是个能替你发请求的代理，别暴露到局域网
 if (require.main === module) {
   const port = parsePort(process.argv.slice(2));
-  createServer().listen(port, '127.0.0.1', () => {
+  const host = parseHost(process.argv.slice(2));
+  createServer().listen(port, host, () => {
     process.stdout.write('磁力搜索已启动  http://127.0.0.1:' + port + '\n');
-    process.stdout.write('Ctrl+C 停止\n');
+    if (!isLoopback(host)) {
+      for (const a of lanAddresses()) {
+        process.stdout.write(
+          '局域网内访问      http://' + a.ip + ':' + port +
+            (a.virtual ? '   (虚拟网卡 ' + a.iface + '，多半不是这个)' : '   (' + a.iface + ')') + '\n'
+        );
+      }
+      process.stdout.write(
+        '\n注意：已开放到局域网。同网络内的任何设备都能用这个服务搜索，\n' +
+          '      并往你的 qBittorrent 里添加下载任务。仅在可信网络下这么用。\n'
+      );
+    }
+    process.stdout.write('\nCtrl+C 停止\n');
   });
 }
 
-module.exports = { createServer };
+module.exports = { createServer, parseHost, isLoopback, lanAddresses, crossSiteReject };

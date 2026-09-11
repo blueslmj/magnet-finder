@@ -61,7 +61,12 @@ test('qBittorrent 连不上时返回 502 并带上可操作的原因', async () 
 
 test('不存在的 qb 子接口返回 404 而不是 500', async () => {
   await withServer(async (base) => {
-    const res = await fetch(base + '/api/qb/nonexistent', { method: 'POST' });
+    // 必须带 application/json —— 跨站防护会挡掉其它 Content-Type 的写请求
+    const res = await fetch(base + '/api/qb/nonexistent', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
     assert.strictEqual(res.status, 404);
   });
 });
